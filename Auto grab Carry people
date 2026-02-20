@@ -1,1 +1,214 @@
+--سكربت auto grab ماب Carry people من صنعي 5
+local player = game.Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
+-- تنظيف أي gui قديم
+if playerGui:FindFirstChild("GrabNearestPlayerGui") then
+    playerGui:FindFirstChild("GrabNearestPlayerGui"):Destroy()
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "GrabNearestPlayerGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.new(0, 140, 0, 50)
+button.Position = UDim2.new(1, -150, 0.5, -25)
+button.AnchorPoint = Vector2.new(0, 0)
+button.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Font = Enum.Font.SourceSansBold
+button.TextSize = 22
+button.Text = "Grab Nearest"
+button.Parent = screenGui
+
+-- متغيرات السحب
+local dragging = false
+local dragStart = nil
+local startPos = nil
+local holdStartTime = nil
+local holdThreshold = 3
+local isDragReady = false
+local wasDragged = false
+
+local function setButtonColor(state)
+    if state == "normal" then
+        button.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+        button.Text = "Grab Nearest"
+    elseif state == "holding" then
+        button.BackgroundColor3 = Color3.fromRGB(0, 220, 180)
+        button.Text = "Hold..."
+    elseif state == "drag" then
+        button.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+        button.Text = "Dragging"
+    end
+end
+
+local function getNearestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    local myChar = player.Character
+    if not myChar then return nil end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+
+    local myPos = myRoot.Position
+
+    for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+        if otherPlayer ~= player and otherPlayer.Character then
+            local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if otherRoot then
+                local distance = (otherRoot.Position - myPos).Magnitude
+                if distance < shortestDistance then
+                    shortestDistance = distance
+                    closestPlayer = otherPlayer
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+local function fireGrab(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character then return end
+
+    local partPriority = {
+        "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso",
+        "Head", "Right Leg", "Left Leg", "RightUpperLeg", "LeftUpperLeg",
+        "Right Arm", "Left Arm", "RightUpperArm", "LeftUpperArm"
+    }
+
+    local targetPart = nil
+    for _, partName in pairs(partPriority) do
+        local part = targetPlayer.Character:FindFirstChild(partName)
+        if part then
+            targetPart = part
+            break
+        end
+    end
+
+    if not targetPart then
+        for _, obj in pairs(targetPlayer.Character:GetChildren()) do
+            if obj:IsA("BasePart") then
+                targetPart = obj
+                break
+            end
+        end
+    end
+
+    if targetPart then
+        local hitPos = targetPart.Position
+        local hitCFrame = targetPart.CFrame
+
+        local args = {
+            [1] = targetPart,
+            [2] = "Grab",
+            [3] = hitPos,
+            [4] = hitCFrame
+        }
+        game:GetService("ReplicatedStorage").Events.Grab:FireServer(unpack(args))
+    end
+end
+
+local holdConnection = nil
+local moveConnection = nil
+
+button.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+    dragging = false
+    isDragReady = false
+    wasDragged = false
+    holdStartTime = tick()
+    dragStart = input.Position
+    startPos = button.Position
+
+    setButtonColor("holding")
+
+    if holdConnection then holdConnection:Disconnect() end
+    holdConnection = RunService.Heartbeat:Connect(function()
+        if not holdStartTime then
+            holdConnection:Disconnect()
+            holdConnection = nil
+            return
+        end
+
+        local elapsed = tick() - holdStartTime
+        local remaining = math.ceil(holdThreshold - elapsed)
+
+        if not dragging then
+            if elapsed < holdThreshold then
+                button.Text = "Hold " .. remaining .. "s"
+            else
+                isDragReady = true
+                setButtonColor("drag")
+                holdConnection:Disconnect()
+                holdConnection = nil
+            end
+        end
+    end)
+end)
+
+moveConnection = UserInputService.InputChanged:Connect(function(input)
+    if not isDragReady then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+    if dragStart then
+        local delta = input.Position - dragStart
+        if delta.Magnitude > 2 then
+            dragging = true
+            wasDragged = true
+            button.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end
+end)
+
+button.InputEnded:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+    if holdConnection then
+        holdConnection:Disconnect()
+        holdConnection = nil
+    end
+
+    local didDrag = wasDragged
+
+    dragging = false
+    isDragReady = false
+    wasDragged = false
+    holdStartTime = nil
+
+    setButtonColor("normal")
+
+    if not didDrag then
+        local targetPlayer = getNearestPlayer()
+        if targetPlayer then
+            fireGrab(targetPlayer)
+        end
+    end
+end)
+
+screenGui.AncestryChanged:Connect(function()
+    if not screenGui.Parent then
+        if holdConnection then
+            holdConnection:Disconnect()
+            holdConnection = nil
+        end
+        if moveConnection then
+            moveConnection:Disconnect()
+            moveConnection = nil
+        end
+    end
+end)
